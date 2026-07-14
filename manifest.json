@@ -1,0 +1,15 @@
+{
+  "name": "ぱしゃっとバトル!",
+  "short_name": "ぱしゃバト",
+  "description": "しゃしんが キャラクターに へんしん! あそびながら まなべる ゲーム",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#BDE6FF",
+  "theme_color": "#BDE6FF",
+  "icons": [
+    { "src": "icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}
