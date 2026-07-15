@@ -514,8 +514,16 @@ body{
 }
 .modal .mtitle{font-weight:900;font-size:clamp(20px,4vw,26px);text-align:center}
 .modal .msub{color:var(--ink-soft);font-weight:700;font-size:15px;text-align:center}
-.gate-row{display:flex;gap:12px;width:100%}
-.gate-row .choice{font-size:30px;min-height:70px}
+.gate-progress{font-size:14px;color:var(--ink-soft);font-weight:800}
+.gate-question{font-size:clamp(30px,7vw,42px);font-weight:900;letter-spacing:.04em}
+.gate-form{display:flex;gap:10px;width:100%;align-items:stretch}
+.gate-input{
+  width:110px;min-height:64px;border:4px solid var(--line);border-radius:16px;
+  font-family:inherit;font-size:28px;font-weight:900;line-height:1;text-align:center;color:var(--ink);background:#fff;
+}
+.gate-input:focus{outline:none;border-color:var(--berry)}
+.gate-check{flex:1;min-height:64px}
+.gate-error{min-height:24px;color:var(--berry-d);font-size:14px;font-weight:800;text-align:center}
 
 /* ===== confetti ===== */
 #confetti{position:fixed;inset:0;pointer-events:none;z-index:60;overflow:hidden}
@@ -768,6 +776,7 @@ const STICKER_NAMES={
 const PRAISE=['せいかい!','すごーい!','やったね!','てんさい!','かんぺき!','そのちょうし!'];
 const ENC=['おしい! もういっかい!','だいじょうぶ! もういちど!','ゆっくり かんがえてみよう!'];
 const SUBJ_LABEL={hira:'ひらがな',kata:'カタカナ',kazu:'すうじ',keisan:'けいさん',eigo:'えいご'};
+const SUBJECT_KEYS=Object.keys(SUBJ_LABEL);
 
 /* ---- SVG stage backgrounds ---- */
 function svgCloud(x,y,s,o){return '<g class="scene-drift" transform="translate('+x+','+y+') scale('+s+')" opacity="'+(o||0.95)+'"><ellipse cx="0" cy="10" rx="64" ry="19" fill="#89B7D1" opacity=".18"/><g fill="#fff" stroke="#D9EFF8" stroke-width="3"><ellipse cx="0" cy="0" rx="46" ry="20"/><ellipse cx="-32" cy="7" rx="28" ry="13"/><ellipse cx="32" cy="7" rx="30" ry="14"/><ellipse cx="-2" cy="-13" rx="27" ry="15"/></g><ellipse cx="-12" cy="-15" rx="12" ry="5" fill="#fff" opacity=".9"/></g>';}
@@ -1041,9 +1050,24 @@ function crownHtml(){
 }
 
 /* ================= state / migration ================= */
+function freshDungeonMaxBySubject(){return {hira:1,kata:1,kazu:1,keisan:1,eigo:1};}
+function clampDungeonMax(v){
+  const n=parseInt(v,10);
+  return Number.isFinite(n)?Math.max(1,Math.min(100,n)):1;
+}
+function subjectDungeonMax(d,s){
+  return clampDungeonMax(d&&d.dungeonMaxBySubject?d.dungeonMaxBySubject[s]:d&&d.dungeonMax);
+}
+function syncLegacyDungeonMax(d){
+  d.dungeonMax=Math.max.apply(null,SUBJECT_KEYS.map(s=>subjectDungeonMax(d,s)));
+  return d.dungeonMax;
+}
+function dungeonProgressText(d){
+  return SUBJECT_KEYS.map(s=>SUBJ_LABEL[s]+' '+subjectDungeonMax(d,s)).join(' / ');
+}
 function freshDb(){
   return {chars:[{id:'d0',name:'にこまる',emoji:'😊',frame:'#FFC53D',xp:0,wins:0,job:'warrior'}],
-    enemies:[],party:['d0'],bossId:null,dungeonMax:1,
+    enemies:[],party:['d0'],bossId:null,dungeonMax:1,dungeonMaxBySubject:freshDungeonMaxBySubject(),
     stickers:{},stats:{},wins:0,settings:{sound:true,difficulty:'easy'}};
 }
 const BAK_KEY='pashabattle_v1_bak';
@@ -1057,6 +1081,19 @@ function migrateDb(d){
   if(!d.enemies)d.enemies=[];
   if(!d.wins)d.wins=0;
   if(!d.dungeonMax)d.dungeonMax=Math.min(100,(d.wins||0)+1);
+  if(!d.dungeonMaxBySubject||typeof d.dungeonMaxBySubject!=='object'||Array.isArray(d.dungeonMaxBySubject)){
+    /* 旧版は全科目で進行度を共有していたため、最も遊んだ科目だけに旧進行度を引き継ぐ。 */
+    const legacyMax=clampDungeonMax(d.dungeonMax);
+    const progress=freshDungeonMaxBySubject();
+    if(legacyMax>1){
+      const ranked=SUBJECT_KEYS.map(s=>({s:s,total:Number((d.stats[s]||{}).total)||0}))
+        .sort((a,b)=>b.total-a.total);
+      progress[ranked[0].total>0?ranked[0].s:'hira']=legacyMax;
+    }
+    d.dungeonMaxBySubject=progress;
+  }
+  SUBJECT_KEYS.forEach(s=>{d.dungeonMaxBySubject[s]=clampDungeonMax(d.dungeonMaxBySubject[s]);});
+  syncLegacyDungeonMax(d); /* 古いバックアップとの互換用に、全科目中の最大値も残す。 */
   d.chars.forEach(c=>{if(!c.job)c.job='warrior';});
   d.enemies.forEach(e=>{if(!e.rank)e.rank='zako';});
   if(!d.party||!d.party.length){
@@ -1112,6 +1149,7 @@ function idbGet(){
 }
 /* すべての変更で自動保存: localStorage(本体+第2キー) と IndexedDB の三重に書き込む */
 function save(){
+  syncLegacyDungeonMax(db);
   db.savedAt=Date.now();
   try{const s=JSON.stringify(db);localStorage.setItem(KEY,s);if(hasProgress(db))localStorage.setItem(BAK_KEY,s);}catch(e){}
   if(idbSyncDone){idbPut(db);}
@@ -1320,13 +1358,14 @@ document.querySelectorAll('.subj').forEach(b=>{
   b.addEventListener('click',()=>{sfx('tap');pendingSubject=b.dataset.s;renderDungeons();show('dungeon');say('どの ダンジョンに いく?');});
 });
 function renderDungeons(){
+  const max=subjectDungeonMax(db,pendingSubject);
   $('#dungeonTitle').textContent=SUBJ_LABEL[pendingSubject]+'の ぼうけん';
-  $('#dungeonHint').textContent='ダンジョン '+db.dungeonMax+' まで ひらいてるよ! かつと つぎが ひらくよ';
+  $('#dungeonHint').textContent='ダンジョン '+max+' まで ひらいてるよ! かつと つぎが ひらくよ';
   let html='';
-  for(let d=1;d<=db.dungeonMax;d++){
+  for(let d=1;d<=max;d++){
     const st=STAGES[(d-1)%STAGES.length];
-    const cleared=d<db.dungeonMax;
-    html+='<button class="dg'+(d===db.dungeonMax?' frontier':'')+'" data-d="'+d+'">'+
+    const cleared=d<max;
+    html+='<button class="dg'+(d===max?' frontier':'')+'" data-d="'+d+'">'+
       '<span class="dnum">'+d+'</span><span class="dstage">'+st.e+'</span>'+
       '<span class="dstar">'+(cleared?'⭐':'')+'</span></button>';
   }
@@ -1979,7 +2018,13 @@ function showResult(b){
     if(charLevel(m.ch)>before)lvups.push(m.ch.name);
   });
   let unlocked=false;
-  if(b.d===db.dungeonMax&&db.dungeonMax<100){db.dungeonMax++;unlocked=true;}
+  let nextMax=subjectDungeonMax(db,b.s);
+  if(b.d===nextMax&&nextMax<100){
+    nextMax++;
+    db.dungeonMaxBySubject[b.s]=nextMax;
+    syncLegacyDungeonMax(db);
+    unlocked=true;
+  }
   save();
   const r=$('#result');
   r.innerHTML=
@@ -1990,7 +2035,7 @@ function showResult(b){
       '<div>'+avatarHtml(m.ch,{job:true})+'<div class="char-name">'+esc(m.ch.name)+'</div></div>').join('')+'</div>'+
     '<div class="xp-note">みんなに +'+gain+' XP!</div>'+
     lvups.map(n=>'<div class="lvup-line">🎊 '+esc(n)+'が レベルアップ!</div>').join('')+
-    (unlocked?'<div class="unlock-line">🗝️ ダンジョン'+db.dungeonMax+'が ひらいた!</div>':'')+
+    (unlocked?'<div class="unlock-line">🗝️ '+SUBJ_LABEL[b.s]+'の ダンジョン'+nextMax+'が ひらいた!</div>':'')+
     '<div class="iconrow" style="margin-top:8px">'+
       (unlocked?'<button class="btn big leaf" id="btnNextD">つぎのダンジョンへ!</button>':'')+
       '<button class="btn'+(unlocked?'':' big')+'" id="btnAgain">もういっかい!</button>'+
@@ -2351,7 +2396,7 @@ function applyImportedText(t){
     db=d;save();
     closeOverlay();
     renderParent();renderHome();
-    openInfo('復元しました','キャラクター'+db.chars.length+'体・ダンジョン'+db.dungeonMax+'まで読み込みました。');
+    openInfo('復元しました','キャラクター'+db.chars.length+'体・進み具合: '+dungeonProgressText(db)+' を読み込みました。');
   }catch(e){
     openInfo('読み込めませんでした','保存したデータをそのまま全部(最初の{から最後の}まで)使ってください。');
   }
@@ -2407,28 +2452,54 @@ async function exportSave(){
 }
 
 function openGate(){
-  const opts=shuffle([{d:'18'},{d:'24',ok:true},{d:'32'}]);
+  let passed=0,lastPair='',problem=null;
   overlay.innerHTML=
     '<div class="modal"><div class="mtitle">おうちのかたへ</div>'+
-    '<div class="msub">おとなの かくにん: 6 × 4 = ?</div>'+
-    '<div class="gate-row">'+opts.map((o,i)=>'<button class="choice" data-i="'+i+'">'+o.d+'</button>').join('')+'</div>'+
+    '<div class="msub">大人の確認です。2問続けて正解してください。</div>'+
+    '<div class="gate-progress" id="gateProgress"></div>'+
+    '<div class="gate-question" id="gateQuestion"></div>'+
+    '<div class="gate-form"><input class="gate-input" id="gateAnswer" type="number" inputmode="numeric" pattern="[0-9]*" min="0" max="99" autocomplete="off" aria-label="かけ算の答え">'+
+    '<button class="btn leaf gate-check" id="gateCheck">確認する</button></div>'+
+    '<div class="gate-error" id="gateError" aria-live="polite"></div>'+
     '<button class="mini-btn" id="gateClose">とじる</button></div>';
   overlay.classList.add('active');
   $('#gateClose').addEventListener('click',()=>{sfx('tap');closeOverlay();});
-  overlay.querySelectorAll('.choice').forEach(b=>{
-    b.addEventListener('click',()=>{
-      if(opts[b.dataset.i].ok){sfx('pop');closeOverlay();renderParent();show('parent');}
-      else{sfx('bad');b.classList.add('wrong');}
-    });
-  });
+  function nextGateProblem(message){
+    let a,b,key;
+    do{
+      a=3+Math.floor(Math.random()*7);
+      b=3+Math.floor(Math.random()*7);
+      key=Math.min(a,b)+'x'+Math.max(a,b);
+    }while(key===lastPair);
+    lastPair=key;problem={answer:a*b};
+    $('#gateProgress').textContent=(passed+1)+'問目 / 2問';
+    $('#gateQuestion').textContent=a+' × '+b+' = ?';
+    $('#gateAnswer').value='';
+    $('#gateError').textContent=message||'';
+    requestAnimationFrame(()=>$('#gateAnswer').focus());
+  }
+  function checkGateAnswer(){
+    const raw=$('#gateAnswer').value.trim();
+    if(!raw){$('#gateError').textContent='答えを入力してください。';return;}
+    if(Number(raw)===problem.answer){
+      passed++;
+      if(passed>=2){sfx('pop');closeOverlay();renderParent();show('parent');return;}
+      sfx('pop');nextGateProblem('正解です。もう1問です。');
+    }else{
+      passed=0;sfx('bad');nextGateProblem('違います。新しい問題で最初からやり直してください。');
+    }
+  }
+  $('#gateCheck').addEventListener('click',checkGateAnswer);
+  $('#gateAnswer').addEventListener('keydown',e=>{if(e.key==='Enter')checkGateAnswer();});
+  nextGateProblem('');
 }
 function renderParent(){
   /* 自動バックアップが「今のデータより多い」ときだけ復元ボタンを出す */
   let bakInfo=null;
   try{
-    const b=JSON.parse(localStorage.getItem(BAK_KEY));
-    if(b&&b.chars&&(b.chars.length>db.chars.length||(b.dungeonMax||1)>db.dungeonMax))
-      bakInfo={chars:b.chars.length,dmax:b.dungeonMax||1};
+    const b=migrateDb(JSON.parse(localStorage.getItem(BAK_KEY)));
+    if(b&&b.chars&&(b.chars.length>db.chars.length||SUBJECT_KEYS.some(s=>subjectDungeonMax(b,s)>subjectDungeonMax(db,s))))
+      bakInfo={chars:b.chars.length,progress:dungeonProgressText(b)};
   }catch(e){}
   const stats=['hira','kata','kazu','keisan','eigo'].map(s=>{
     const st=db.stats[s]||{ok:0,total:0};
@@ -2447,6 +2518,9 @@ function renderParent(){
     '<div class="rowline"><span style="font-weight:800">'+(c.rank==='boss'?'👹':'😈')+' '+esc(c.name)+' ('+(c.rank==='boss'?'ボス':'ザコ')+')</span>'+
     '<button class="mini-btn danger del-char" data-id="'+c.id+'" data-list="enemies">けす</button></div>').join('');
   const diff=db.settings.difficulty;
+  const dungeonInputs=SUBJECT_KEYS.map(s=>
+    '<div class="rowline"><label for="dmax-'+s+'">'+SUBJ_LABEL[s]+'</label><input class="dmax-input" id="dmax-'+s+'" data-subject="'+s+'" type="number" min="1" max="100" value="'+subjectDungeonMax(db,s)+'" style="width:84px;font-family:inherit;font-size:18px;font-weight:800;border:3px solid var(--line);border-radius:12px;padding:8px;text-align:center;color:var(--ink)"></div>'
+  ).join('');
   $('#parentPanel').innerHTML=
     '<h3>🎚 ゲームのむずかしさ</h3>'+
     '<div class="rowline"><button class="mini-btn'+(diff==='easy'?' on':'')+'" id="diffEasy">やさしい</button>'+
@@ -2457,18 +2531,19 @@ function renderParent(){
     '<div class="note">音が出ない場合は、iPad本体の消音モード(コントロールセンター)と音量をご確認ください。</div>'+
     '<h3>👨‍👩‍👧 キャラクターの管理 (なかま'+db.chars.length+'/'+CAP+'・てき'+db.enemies.length+'/'+CAP+')</h3>'+
     '<div style="display:flex;flex-direction:column;gap:10px">'+charRows+(enemyRows?'<div class="note" style="margin-top:4px">てきキャラ:</div>'+enemyRows:'')+'</div>'+
-    '<div class="note">戦士=攻撃力が高い単体攻撃。魔法使い=攻撃力は低いが敵全体を攻撃。ダンジョンはクリアすると次の番号が開きます(全100)。バトル中、まちがえると敵が攻撃してきます。HPはバトルごとに全回復します。</div>'+
+    '<div class="note">戦士=攻撃力が高い単体攻撃。魔法使い=攻撃力は低いが敵全体を攻撃。ダンジョンは科目ごとに進み、同じ科目でクリアすると次の番号が開きます(各100)。バトル中、まちがえると敵が攻撃してきます。HPはバトルごとに全回復します。</div>'+
     '<h3>💾 バックアップ</h3>'+
-    '<div class="note" style="background:#F3EDE0;border-radius:12px;padding:10px">いまのデータ: なかま'+db.chars.length+'体 / てき'+db.enemies.length+'体 / ダンジョン'+db.dungeonMax+'まで<br>さいごの自動保存: '+(db.savedAt?new Date(db.savedAt).toLocaleString('ja-JP'):'—')+'<br>さいごのファイル保存: '+(db.lastExportAt?new Date(db.lastExportAt).toLocaleString('ja-JP'):'まだ')+(db.clearsSinceExport?'(そのあと'+db.clearsSinceExport+'回クリア)':'')+'</div>'+
+    '<div class="note" style="background:#F3EDE0;border-radius:12px;padding:10px">いまのデータ: なかま'+db.chars.length+'体 / てき'+db.enemies.length+'体<br>進み具合: '+dungeonProgressText(db)+'<br>さいごの自動保存: '+(db.savedAt?new Date(db.savedAt).toLocaleString('ja-JP'):'—')+'<br>さいごのファイル保存: '+(db.lastExportAt?new Date(db.lastExportAt).toLocaleString('ja-JP'):'まだ')+(db.clearsSinceExport?'(そのあと'+db.clearsSinceExport+'回クリア)':'')+'</div>'+
     '<div class="note">進み具合は、あそぶたび(ダンジョンをクリアするたび)に この端末の3か所へ自動で上書き保存されます。ただしiPadは再起動などでブラウザの保存データを消してしまうことがあるため、ときどき下のボタンで端末の外へも保存しておくと確実です。</div>'+
     '<div class="rowline"><span>共有シートで保存(→"ファイル"に保存)</span><button class="mini-btn" id="expSave">保存する</button></div>'+
     '<div class="rowline"><span>文字としてコピー(→メモに貼り付け)</span><button class="mini-btn" id="expCopy">コピーする</button></div>'+
     '<div class="rowline"><span>ファイルから復元</span><button class="mini-btn" id="impSave">読み込む</button></div>'+
     '<div class="rowline"><span>貼り付けて復元(メモから)</span><button class="mini-btn" id="impPaste">貼り付ける</button></div>'+
     '<input type="file" id="impFile" accept=".json,.txt,application/json,text/plain" hidden>'+
-    (bakInfo?'<div class="rowline"><span>端末内の自動バックアップから復元<br><small style="color:var(--ink-soft)">(キャラ'+bakInfo.chars+'体・ダンジョン'+bakInfo.dmax+'までのデータがあります)</small></span><button class="mini-btn danger" id="bakRestore">復元</button></div>':'')+
-    '<div class="rowline"><span>ダンジョン開放数(1〜100)</span><span style="display:flex;gap:8px;align-items:center"><input id="dmaxInput" type="number" min="1" max="100" value="'+db.dungeonMax+'" style="width:84px;font-family:inherit;font-size:18px;font-weight:800;border:3px solid var(--line);border-radius:12px;padding:8px;text-align:center;color:var(--ink)"><button class="mini-btn" id="dmaxSet">適用</button></span></div>'+
-    '<div class="note">データが消えてしまった場合など、ダンジョンの進み具合をここから戻せます。</div>'+
+    (bakInfo?'<div class="rowline"><span>端末内の自動バックアップから復元<br><small style="color:var(--ink-soft)">(キャラ'+bakInfo.chars+'体・'+bakInfo.progress+')</small></span><button class="mini-btn danger" id="bakRestore">復元</button></div>':'')+
+    '<h3>🗝 ダンジョン開放数 (各1〜100)</h3><div style="display:flex;flex-direction:column;gap:8px">'+dungeonInputs+'</div>'+
+    '<button class="mini-btn" id="dmaxSet">この進み具合を適用</button>'+
+    '<div class="note">データが消えてしまった場合など、科目ごとの進み具合をここから戻せます。</div>'+
     '<h3>🗑 データ</h3><div class="rowline"><span>すべての記録を消す</span><button class="mini-btn danger" id="resetAll">リセット</button></div>'+
     '<h3>🔒 プライバシー</h3><div class="note">撮影した写真とすべての記録は、この端末(ブラウザ)の中にだけ保存されます。インターネットへの送信は一切ありません。ブラウザのデータを消去するとゲームのデータも消えます。</div>';
   $('#diffEasy').addEventListener('click',()=>{db.settings.difficulty='easy';save();renderParent();});
@@ -2496,12 +2571,17 @@ function renderParent(){
       const d=migrateDb(JSON.parse(localStorage.getItem(BAK_KEY)));
       if(!d)throw new Error('bad');
       db=d;save();renderParent();renderHome();
-      openInfo('復元しました','キャラクター'+db.chars.length+'体・ダンジョン'+db.dungeonMax+'までのデータに戻しました。');
+      openInfo('復元しました','キャラクター'+db.chars.length+'体・進み具合: '+dungeonProgressText(db)+' に戻しました。');
     }catch(e){openInfo('エラー','自動バックアップを読み込めませんでした。');}
   });
   $('#dmaxSet').addEventListener('click',()=>{
-    const v=parseInt($('#dmaxInput').value,10);
-    if(v>=1&&v<=100){db.dungeonMax=v;save();sfx('pop');renderParent();}
+    const values={};let valid=true;
+    document.querySelectorAll('.dmax-input').forEach(input=>{
+      const v=parseInt(input.value,10);
+      if(v<1||v>100||!Number.isFinite(v))valid=false;
+      values[input.dataset.subject]=v;
+    });
+    if(valid){SUBJECT_KEYS.forEach(s=>{db.dungeonMaxBySubject[s]=values[s];});syncLegacyDungeonMax(db);save();sfx('pop');renderParent();}
   });
   $('#sndToggle').addEventListener('click',e=>{
     db.settings.sound=!db.settings.sound;save();
